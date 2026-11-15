@@ -1,0 +1,99 @@
+name: Auto Version Bump & NPM Publish
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Releases run one at a time so two quick pushes never pick the same version.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test, Bump Version & Publish
+    runs-on: ubuntu-latest
+    # Prevent infinite loop on the automated release commit
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, 'chore(release):')"
+    steps:
+      - name: Checkout latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js (with npm registry)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Run Test Suite
+        run: npm test
+
+      - name: Configure Git Bot
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check NPM_TOKEN Secret
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret is not set in GitHub repository settings!"
+            echo "Add your npm access token at Settings -> Secrets and variables -> Actions -> NPM_TOKEN"
+            exit 1
+          fi
+
+      - name: Pick next version
+        id: version
+        # Next patch after the highest of package.json, the npm registry and
+        # existing v* tags, so a stray tag or a failed run can't block releases.
+        run: |
+          git fetch --tags --force origin
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          NPM_VERSION=$(npm view "$(node -p "require('./package.json').name")" version 2>/dev/null || echo 0.0.0)
+          TAG_VERSION=$(git tag -l 'v[0-9]*' | sed 's/^v//' | sort -V | tail -1)
+          NEXT=$(node -e '
+            const v = process.argv.slice(1).filter(Boolean).map(s => s.split(".").map(Number));
+            v.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+            const [M, m, p] = v[v.length - 1];
+            console.log(`${M}.${m}.${p + 1}`);
+          ' "$PKG_VERSION" "${NPM_VERSION:-0.0.0}" "${TAG_VERSION:-0.0.0}")
+          echo "package.json=$PKG_VERSION npm=${NPM_VERSION:-none} tag=${TAG_VERSION:-none} -> next=$NEXT"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Bump Version
+        # the "version" npm script also writes the new version into
+        # src/unix/termx and src/windows/termx.ps1 (scripts/sync-version.js)
+        run: |
+          npm version "${{ steps.version.outputs.next }}" -m "chore(release): bump version to %s [skip ci]"
+
+      - name: Push bump commit and tag together
+        # --atomic: either main AND the tag are updated, or neither is.
+        # If main moved meanwhile, replay the bump on top and try again.
+        run: |
+          TAG="v${{ steps.version.outputs.next }}"
+          for attempt in 1 2 3; do
+            if git push --atomic origin HEAD:main "$TAG"; then
+              exit 0
+            fi
+            echo "main moved, rebasing the release commit (attempt $attempt)"
+            git fetch origin main
+            git rebase origin/main
+            git tag -f -a "$TAG" -m "chore(release): bump version to ${{ steps.version.outputs.next }} [skip ci]"
+          done
+          echo "::error::Could not push the release commit after 3 attempts"
+          exit 1
+
+      - name: Publish to NPM Registry
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
