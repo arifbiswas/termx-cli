@@ -98,10 +98,11 @@ if (isWin) {
   const libFile = path.join(home, 'termx-lib.sh');
   fs.writeFileSync(libFile, lib);
   const configure = () => run('bash', ['-c', `set +u; source "${libFile}"; configure_zshrc`]);
+  const ok = (r) => assert.strictEqual(r.code, 0, `exit ${r.code}\n${r.out}`);
 
   test('configure .zshrc keeps user content and is idempotent', () => {
-    assert.strictEqual(configure().code, 0);
-    assert.strictEqual(configure().code, 0);
+    ok(configure());
+    ok(configure());
     const c = fs.readFileSync(zshrc, 'utf8');
     assert.strictEqual(c.split('# >>> termx pre >>>').length - 1, 1, 'pre block duplicated');
     assert.strictEqual(c.split('# >>> termx post >>>').length - 1, 1, 'post block duplicated');
@@ -122,8 +123,8 @@ if (isWin) {
     assert.ok(fs.existsSync(omz), 'Oh My Zsh should be kept');
   });
   test('reinstall then uninstall --all restores the true original .zshrc', () => {
-    assert.strictEqual(configure().code, 0);
-    assert.strictEqual(termx('uninstall', '--all', '--yes').code, 0);
+    ok(configure());
+    ok(termx('uninstall', '--all', '--yes'));
     assert.strictEqual(fs.readFileSync(zshrc, 'utf8'), original);
     assert.ok(!fs.existsSync(omz), 'Oh My Zsh should be removed');
   });
