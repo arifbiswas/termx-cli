@@ -1,6 +1,6 @@
 {
   "name": "termx-cli",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "One command terminal customizer: Oh My Zsh on macOS/Linux, Oh My Posh on Windows, with auto-suggestions, Nerd Fonts, a live theme picker, env manager and clean uninstall.",
   "scripts": {
     "test": "node test/test.js",
