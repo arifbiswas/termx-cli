@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# termx installer: same command everywhere.
+#   macOS / Linux:  ./install          -> Oh My Zsh setup
+#   Windows:        .\install          -> runs install.cmd -> Oh My Posh setup
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)   # Git Bash on Windows -> hand off to PowerShell
+    exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$DIR/src/windows/termx.ps1")" install "$@" ;;
+  *) exec bash "$DIR/src/unix/termx" install "$@" ;;
+esac

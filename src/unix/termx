@@ -1,0 +1,581 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  termx: one-command terminal setup for macOS / Linux
+#  Oh My Zsh + autosuggestions + syntax highlighting + Nerd Font + theme picker
+#
+#  Same commands as the Windows version (termx.ps1):
+#    termx install            install + configure everything (idempotent)
+#    termx theme              interactive theme picker (live preview)
+#    termx theme list         list all themes
+#    termx theme gallery      render every theme's prompt in the terminal
+#    termx theme set <name>   apply a theme
+#    termx theme try <name>   open a temporary shell with that theme
+#    termx theme random       apply a random theme
+#    termx theme current      show the active theme
+#    termx env set K V | unset K | list
+#    termx update             update Oh My Zsh, plugins and themes
+#    termx doctor             show what is installed / configured
+#    termx uninstall [--all] [--yes]
+# =============================================================================
+# NOTE: must stay compatible with macOS's bash 3.2 (no assoc arrays, no ${x,,})
+set -uo pipefail
+
+TERMX_VERSION="1.0.0"
+TERMX_HOME="${TERMX_HOME:-$HOME/.termx}"
+ZSH_DIR="${ZSH:-$HOME/.oh-my-zsh}"
+ZSH_CUSTOM_DIR="${ZSH_CUSTOM:-$ZSH_DIR/custom}"
+ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
+DEFAULT_THEME="${TERMX_DEFAULT_THEME:-powerlevel10k/powerlevel10k}"
+OMZ_INSTALL_URL="https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh"
+NERD_FONT_FAMILY="MesloLGS Nerd Font"
+NERD_FONT_PS="MesloLGSNerdFont-Regular"
+
+ASSUME_YES=0
+[ -t 0 ] || [ -r /dev/tty ] || ASSUME_YES=1
+
+# --------------------------------------------------------------------- ui ----
+if [ -t 1 ]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_CYAN=$'\033[36m'
+else
+  C_RESET=; C_BOLD=; C_DIM=; C_RED=; C_GREEN=; C_YELLOW=; C_BLUE=; C_CYAN=
+fi
+info()  { printf '%s==>%s %s\n' "$C_BLUE$C_BOLD" "$C_RESET" "$*"; }
+ok()    { printf ' %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
+warn()  { printf ' %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+err()   { printf ' %s✗%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
+die()   { err "$*"; exit 1; }
+has()   { command -v "$1" >/dev/null 2>&1; }
+
+# Read an answer from the real terminal (works under `curl | bash`)
+ask() { # ask "question" default -> echoes answer
+  local q="$1" def="${2:-}" ans=""
+  if [ "$ASSUME_YES" = 1 ] || [ ! -r /dev/tty ]; then echo "$def"; return; fi
+  printf '%s?%s %s ' "$C_CYAN" "$C_RESET" "$q" > /dev/tty
+  IFS= read -r ans < /dev/tty || ans=""
+  echo "${ans:-$def}"
+}
+confirm() { # confirm "question" -> 0 yes / 1 no (default yes)
+  local a; a="$(ask "$1 [Y/n]" y)"
+  case "$a" in [nN]*) return 1 ;; *) return 0 ;; esac
+}
+
+banner() {
+  printf '%s' "$C_CYAN$C_BOLD"
+  cat <<'EOF'
+  _
+ | |_ ___ _ __ _ __ ___ __  __
+ | __/ _ \ '__| '_ ` _ \\ \/ /
+ | ||  __/ |  | | | | | |>  <
+  \__\___|_|  |_| |_| |_/_/\_\
+EOF
+  printf '%s  terminal customizer v%s, %s\n\n' "$C_RESET$C_DIM" "$TERMX_VERSION" "$OS_NAME$C_RESET"
+}
+
+# --------------------------------------------------------------- platform ----
+OS="unknown"; OS_NAME="unknown"
+case "$(uname -s)" in
+  Darwin) OS="mac";   OS_NAME="macOS $(sw_vers -productVersion 2>/dev/null)" ;;
+  Linux)  OS="linux"; OS_NAME="Linux $( (. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-}") )" ;;
+  MINGW*|MSYS*|CYGWIN*) OS="windows"; OS_NAME="Windows (Git Bash)" ;;
+esac
+
+SUDO=""
+if [ "$(id -u)" -ne 0 ] && has sudo; then SUDO="sudo"; fi
+
+brew_env() {
+  local p
+  for p in /opt/homebrew/bin/brew /usr/local/bin/brew /home/linuxbrew/.linuxbrew/bin/brew; do
+    if [ -x "$p" ]; then eval "$("$p" shellenv)"; return 0; fi
+  done
+  return 1
+}
+
+ensure_brew() {
+  has brew || brew_env || true
+  has brew && return 0
+  info "Installing Homebrew (you may be asked for your password once)…"
+  if [ -r /dev/tty ]; then sudo -v < /dev/tty || true; fi
+  NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+    || die "Homebrew install failed. Install it from https://brew.sh and re-run: termx install"
+  brew_env || die "Homebrew installed but not found on PATH"
+  ok "Homebrew ready"
+}
+
+pkg_install() { # pkg_install name...
+  [ $# -eq 0 ] && return 0
+  case "$OS" in
+    mac) brew install "$@" >/dev/null ;;
+    linux)
+      if   has apt-get; then $SUDO apt-get update -qq >/dev/null 2>&1; $SUDO apt-get install -y -qq "$@" >/dev/null
+      elif has dnf;     then $SUDO dnf install -y -q "$@" >/dev/null
+      elif has yum;     then $SUDO yum install -y -q "$@" >/dev/null
+      elif has pacman;  then $SUDO pacman -S --noconfirm --needed "$@" >/dev/null
+      elif has zypper;  then $SUDO zypper -n -q install "$@" >/dev/null
+      elif has apk;     then $SUDO apk add -q "$@" >/dev/null
+      else return 1; fi ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_packages() {
+  info "Checking required packages (git, zsh, curl, fzf)…"
+  [ "$OS" = mac ] && ensure_brew
+  local missing="" p
+  for p in git zsh curl fzf; do has "$p" || missing="$missing $p"; done
+  if [ "$OS" = linux ] && ! has fc-cache; then missing="$missing fontconfig"; fi
+  if [ "$OS" = linux ] && ! has unzip && ! has xz; then missing="$missing xz-utils"; fi
+  if [ -n "$missing" ]; then
+    info "Installing:$missing"
+    # shellcheck disable=SC2086
+    pkg_install $missing || warn "Could not install some packages:$missing"
+  fi
+  for p in git zsh curl; do has "$p" || die "'$p' is required but could not be installed"; done
+  ok "git, zsh, curl$(has fzf && echo ', fzf') available"
+}
+
+# ------------------------------------------------------------- oh my zsh ----
+install_omz() {
+  if [ -f "$ZSH_DIR/oh-my-zsh.sh" ]; then ok "Oh My Zsh already installed"; return 0; fi
+  info "Installing Oh My Zsh…"
+  RUNZSH=no CHSH=no KEEP_ZSHRC=yes ZSH="$ZSH_DIR" \
+    sh -c "$(curl -fsSL "$OMZ_INSTALL_URL")" "" --unattended --keep-zshrc >/dev/null \
+    || die "Oh My Zsh install failed"
+  mkdir -p "$TERMX_HOME"; touch "$TERMX_HOME/.installed-omz"
+  ok "Oh My Zsh installed"
+}
+
+git_get() { # git_get url dest
+  local url="$1" dest="$2"
+  if [ -d "$dest/.git" ]; then git -C "$dest" pull -q --ff-only >/dev/null 2>&1 || true
+  else git clone -q --depth=1 "$url" "$dest" >/dev/null 2>&1 || { warn "Could not clone $url"; return 1; }; fi
+}
+
+install_plugins() {
+  info "Installing plugins (autosuggestions, syntax highlighting, completions)…"
+  mkdir -p "$ZSH_CUSTOM_DIR/plugins" "$ZSH_CUSTOM_DIR/themes"
+  git_get https://github.com/zsh-users/zsh-autosuggestions     "$ZSH_CUSTOM_DIR/plugins/zsh-autosuggestions"
+  git_get https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_CUSTOM_DIR/plugins/zsh-syntax-highlighting"
+  git_get https://github.com/zsh-users/zsh-completions         "$ZSH_CUSTOM_DIR/plugins/zsh-completions"
+  ok "Plugins ready"
+  info "Installing extra themes (powerlevel10k, spaceship)…"
+  git_get https://github.com/romkatv/powerlevel10k "$ZSH_CUSTOM_DIR/themes/powerlevel10k"
+  if git_get https://github.com/spaceship-prompt/spaceship-prompt "$ZSH_CUSTOM_DIR/themes/spaceship-prompt"; then
+    ln -sf "$ZSH_CUSTOM_DIR/themes/spaceship-prompt/spaceship.zsh-theme" "$ZSH_CUSTOM_DIR/themes/spaceship.zsh-theme"
+  fi
+  # Zero-question p10k: ship a ready config so the wizard never pops up
+  if [ ! -f "$HOME/.p10k.zsh" ] && [ -f "$ZSH_CUSTOM_DIR/themes/powerlevel10k/config/p10k-lean.zsh" ]; then
+    cp "$ZSH_CUSTOM_DIR/themes/powerlevel10k/config/p10k-lean.zsh" "$HOME/.p10k.zsh"
+    touch "$TERMX_HOME/.created-p10k"
+  fi
+  ok "Themes ready"
+}
+
+# ------------------------------------------------------------------ fonts ----
+install_font() {
+  info "Installing Nerd Font ($NERD_FONT_FAMILY) for icons…"
+  case "$OS" in
+    mac)
+      if ls "$HOME/Library/Fonts"/MesloLGS*Nerd* >/dev/null 2>&1 || ls /Library/Fonts/MesloLGS*Nerd* >/dev/null 2>&1; then
+        ok "Font already installed"
+      else
+        brew install --cask font-meslo-lg-nerd-font >/dev/null 2>&1 && ok "Font installed" || warn "Font install failed (icons may look like boxes)"
+      fi ;;
+    linux)
+      local dir="$HOME/.local/share/fonts/termx-meslo"
+      if [ -d "$dir" ] && ls "$dir"/*.ttf >/dev/null 2>&1; then ok "Font already installed"; return; fi
+      mkdir -p "$dir"
+      if curl -fsSL https://github.com/ryanoasis/nerd-fonts/releases/latest/download/Meslo.tar.xz | tar -xJ -C "$dir" 2>/dev/null; then
+        has fc-cache && fc-cache -f "$dir" >/dev/null 2>&1
+        ok "Font installed"
+      else warn "Font download failed (icons may look like boxes)"; fi ;;
+  esac
+}
+
+configure_terminal_font() {
+  [ "$OS" = mac ] || return 0
+  info "Setting terminal font…"
+  # Terminal.app: set the font of the default profile
+  if [ -d "/System/Applications/Utilities/Terminal.app" ]; then
+    if osascript -e "tell application \"Terminal\" to set font name of default settings to \"$NERD_FONT_PS\"" \
+                 -e 'tell application "Terminal" to set font size of default settings to 13' >/dev/null 2>&1; then
+      ok "Terminal.app font → $NERD_FONT_FAMILY"
+    else
+      warn "Could not set Terminal.app font automatically (Terminal → Settings → Profiles → Font)"
+    fi
+  fi
+  # iTerm2: add a dynamic profile "termx" with the nerd font
+  if [ -d "/Applications/iTerm.app" ]; then
+    local dp="$HOME/Library/Application Support/iTerm2/DynamicProfiles"
+    mkdir -p "$dp"
+    cat > "$dp/termx.json" <<EOF
+{ "Profiles": [ {
+  "Name": "termx", "Guid": "termx-0001-profile",
+  "Dynamic Profile Parent Name": "Default",
+  "Normal Font": "$NERD_FONT_PS 13", "Non Ascii Font": "$NERD_FONT_PS 13",
+  "Use Non-ASCII Font": false
+} ] }
+EOF
+    defaults write com.googlecode.iterm2 "Default Bookmark Guid" -string "termx-0001-profile" >/dev/null 2>&1 || true
+    ok "iTerm2 profile 'termx' created and set as default"
+  fi
+  case "${TERM_PROGRAM:-}" in
+    vscode) warn "VS Code: set \"terminal.integrated.fontFamily\": \"$NERD_FONT_FAMILY\" in settings" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- .zshrc ----
+PRE_START="# >>> termx pre >>>"; PRE_END="# <<< termx pre <<<"
+POST_START="# >>> termx post >>>"; POST_END="# <<< termx post <<<"
+
+strip_blocks() { # stdin -> stdout without termx blocks
+  awk -v a="$PRE_START" -v b="$PRE_END" -v c="$POST_START" -v d="$POST_END" '
+    $0==a || $0==c {skip=1; next}
+    $0==b || $0==d {skip=0; next}
+    !skip {print}'
+}
+
+pre_block() {
+  cat <<'EOF'
+# >>> termx pre >>>
+# Managed by termx: change things with the `termx` command, not by hand.
+export TERMX_HOME="$HOME/.termx"
+for __b in /opt/homebrew/bin/brew /usr/local/bin/brew /home/linuxbrew/.linuxbrew/bin/brew; do
+  [[ -x $__b ]] && { eval "$($__b shellenv)"; break; }
+done; unset __b
+path=("$TERMX_HOME/bin" $path)
+if [[ -n ${TERMX_THEME_OVERRIDE:-} ]]; then ZSH_THEME="$TERMX_THEME_OVERRIDE"
+elif [[ -r $TERMX_HOME/theme ]]; then ZSH_THEME="$(<$TERMX_HOME/theme)"; fi
+POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true
+ZSH_DISABLE_COMPFIX=true
+plugins+=(git sudo colored-man-pages z zsh-autosuggestions)
+(( $+commands[fzf] )) && plugins+=(fzf)
+plugins=(${(u)plugins:#zsh-syntax-highlighting} zsh-syntax-highlighting)   # dedupe, highlighter last
+fpath+=("${ZSH_CUSTOM:-$ZSH/custom}/plugins/zsh-completions/src")
+ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=40
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=244"
+# <<< termx pre <<<
+EOF
+}
+
+post_block() {
+  cat <<'EOF'
+# >>> termx post >>>
+[[ $ZSH_THEME == powerlevel10k/* && -r ~/.p10k.zsh ]] && source ~/.p10k.zsh
+HISTSIZE=50000; SAVEHIST=50000
+setopt HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS SHARE_HISTORY
+bindkey '^ ' autosuggest-accept          # Ctrl+Space accepts the suggestion (→ also works)
+bindkey '^[[1;5C' forward-word           # Ctrl+→ accepts one word
+[[ -r $TERMX_HOME/env.zsh ]] && source "$TERMX_HOME/env.zsh"
+termx() {                                # reload the shell after a theme change
+  command termx "$@"; local rc=$?
+  if [[ -f $TERMX_HOME/.reload ]]; then rm -f "$TERMX_HOME/.reload"; exec zsh; fi
+  return $rc
+}
+# <<< termx post <<<
+EOF
+}
+
+configure_zshrc() {
+  info "Configuring $ZSHRC…"
+  mkdir -p "$TERMX_HOME/backups"
+  local ts tmp; ts="$(date +%Y%m%d-%H%M%S)"; tmp="$(mktemp)"
+  # reinstall after an uninstall: keep the *true* original from the first install
+  local f
+  for f in zshrc.original zshrc.none; do
+    if [ ! -f "$TERMX_HOME/backups/zshrc.original" ] && [ ! -f "$TERMX_HOME/backups/zshrc.none" ] \
+       && [ -f "$HOME/.termx-backups/$f" ]; then cp "$HOME/.termx-backups/$f" "$TERMX_HOME/backups/$f"; fi
+  done
+  if [ -f "$ZSHRC" ]; then
+    cp "$ZSHRC" "$TERMX_HOME/backups/zshrc.$ts"
+    [ -f "$TERMX_HOME/backups/zshrc.original" ] || [ -f "$TERMX_HOME/backups/zshrc.none" ] \
+      || cp "$ZSHRC" "$TERMX_HOME/backups/zshrc.original"
+  else
+    [ -f "$TERMX_HOME/backups/zshrc.original" ] || touch "$TERMX_HOME/backups/zshrc.none"
+  fi
+
+  # 1) start from the user's file without old termx blocks
+  if [ -f "$ZSHRC" ]; then strip_blocks < "$ZSHRC" > "$tmp"; else : > "$tmp"; fi
+
+  # 2) no Oh My Zsh in it yet → OMZ template on top, previous content (PATH, nvm, aliases…) kept below
+  if ! grep -q 'oh-my-zsh.sh' "$tmp"; then
+    local merged; merged="$(mktemp)"
+    cat "$ZSH_DIR/templates/zshrc.zsh-template" > "$merged"
+    if [ -s "$tmp" ]; then printf '\n# ---- your previous ~/.zshrc (kept by termx) ----\n' >> "$merged"; cat "$tmp" >> "$merged"; fi
+    mv "$merged" "$tmp"
+  fi
+
+  # 3) insert pre block right before `source $ZSH/oh-my-zsh.sh`, post block at the end
+  local pre post out; pre="$(mktemp)"; post="$(mktemp)"; out="$(mktemp)"
+  pre_block > "$pre"; post_block > "$post"
+  awk -v prefile="$pre" '
+    !done && /^[[:space:]]*(source|\.)[[:space:]].*oh-my-zsh\.sh/ {
+      while ((getline line < prefile) > 0) print line; done=1 }
+    {print}' "$tmp" > "$out"
+  if ! grep -qF "$PRE_START" "$out"; then   # unusual .zshrc: put pre block on top
+    cat "$pre" "$out" > "$tmp"; mv "$tmp" "$out"; tmp="$(mktemp)"
+  fi
+  printf '\n' >> "$out"; cat "$post" >> "$out"
+  cat "$out" > "$ZSHRC"
+  rm -f "$tmp" "$pre" "$post" "$out"
+
+  [ -f "$TERMX_HOME/theme" ] || echo "$DEFAULT_THEME" > "$TERMX_HOME/theme"
+  touch "$TERMX_HOME/env.zsh"
+  ok ".zshrc configured (backup: ~/.termx/backups/zshrc.$ts)"
+}
+
+set_default_shell() {
+  case "${SHELL:-}" in */zsh) ok "zsh is already your default shell"; return ;; esac
+  local z; z="$(command -v zsh)"; [ "$OS" = mac ] && [ -x /bin/zsh ] && z=/bin/zsh
+  info "Making zsh your default shell…"
+  if ! grep -qx "$z" /etc/shells 2>/dev/null; then echo "$z" | $SUDO tee -a /etc/shells >/dev/null || true; fi
+  if chsh -s "$z" < /dev/tty 2>/dev/null || $SUDO chsh -s "$z" "$(id -un)" 2>/dev/null; then ok "Default shell → $z"
+  else warn "Could not change default shell. Run: chsh -s $z"; fi
+}
+
+self_install() {
+  mkdir -p "$TERMX_HOME/bin"
+  local src; src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  if [ "$src" != "$TERMX_HOME/bin/termx" ]; then cp "$src" "$TERMX_HOME/bin/termx"; fi
+  chmod +x "$TERMX_HOME/bin/termx"
+  ok "termx command installed → ~/.termx/bin/termx"
+}
+
+# ----------------------------------------------------------------- themes ----
+list_themes() {
+  {
+    [ -d "$ZSH_DIR/themes" ] && for f in "$ZSH_DIR/themes"/*.zsh-theme; do basename "$f" .zsh-theme; done
+    if [ -d "$ZSH_CUSTOM_DIR/themes" ]; then
+      ( cd "$ZSH_CUSTOM_DIR/themes" && find . -maxdepth 2 -name '*.zsh-theme' ! -path './spaceship-prompt/*' ) \
+        | sed -e 's|^\./||' -e 's|\.zsh-theme$||'
+    fi
+  } 2>/dev/null | grep -v '^example$' | sort -u
+}
+theme_exists() { list_themes | grep -qxF "$1"; }
+current_theme() { cat "$TERMX_HOME/theme" 2>/dev/null || echo "$DEFAULT_THEME"; }
+
+theme_render() { # print a theme's prompt (used for previews)
+  local t="$1"
+  case "$t" in
+    powerlevel10k/*) printf '%s\n' "  ${C_BOLD}Powerlevel10k${C_RESET}: fast, icon-rich, git-aware prompt" \
+                       "  ${C_DIM}(live preview not possible, use: termx theme try $t)${C_RESET}"; return ;;
+  esac
+  ZSH="$ZSH_DIR" ZSH_CUSTOM="$ZSH_CUSTOM_DIR" TERMX_T="$t" zsh -f -c '
+    ZSH_THEME=$TERMX_T; plugins=(git); DISABLE_AUTO_UPDATE=true; ZSH_DISABLE_COMPFIX=true
+    source $ZSH/oh-my-zsh.sh >/dev/null 2>&1
+    for f in $precmd_functions; do $f >/dev/null 2>&1; done
+    [[ -n $PS1 ]] && print -nP -- "$PS1" 2>/dev/null; print -n "git status"
+    [[ -n ${RPROMPT:-$RPS1} ]] && { print -n "    "; print -nP -- "${RPROMPT:-$RPS1}" 2>/dev/null }; print' 2>/dev/null
+}
+
+theme_set() {
+  local t="${1:-}"
+  [ -n "$t" ] || die "Usage: termx theme set <name>   (see: termx theme list)"
+  theme_exists "$t" || die "Theme '$t' not found. See: termx theme list"
+  mkdir -p "$TERMX_HOME"; echo "$t" > "$TERMX_HOME/theme"; touch "$TERMX_HOME/.reload"
+  ok "Theme set to ${C_BOLD}$t${C_RESET} (reloading shell…)"
+}
+
+theme_pick() {
+  local cur choice; cur="$(current_theme)"
+  local self="$TERMX_HOME/bin/termx"; [ -x "$self" ] || self="$0"
+  if has fzf; then
+    choice="$(list_themes | fzf --height=85% --reverse --border=rounded --cycle \
+      --prompt='  theme › ' --pointer='▶' \
+      --header="↑/↓ move · type to search · Enter apply · Esc cancel   (current: $cur)" \
+      --preview="'$self' theme render {}" --preview-window=down,4,wrap)" || return 0
+  else
+    local themes i=1 n
+    themes="$(list_themes)"
+    echo "$themes" | while IFS= read -r n; do printf '%4d) %s\n' "$i" "$n"; i=$((i+1)); done | column -c "${COLUMNS:-100}"
+    n="$(ask "Theme number or name (current: $cur):" "")"
+    case "$n" in ''|*[!0-9]*) choice="$n" ;; *) choice="$(echo "$themes" | sed -n "${n}p")" ;; esac
+  fi
+  [ -n "$choice" ] && theme_set "$choice"
+}
+
+theme_gallery() {
+  local cur t; cur="$(current_theme)"
+  info "Rendering all themes (this takes a few seconds)…"
+  list_themes | while IFS= read -r t; do
+    if [ "$t" = "$cur" ]; then printf '%s● %s (current)%s\n' "$C_GREEN$C_BOLD" "$t" "$C_RESET"
+    else printf '%s○ %s%s\n' "$C_BOLD" "$t" "$C_RESET"; fi
+    theme_render "$t" | sed 's/^/   /'; echo
+  done
+  echo "Apply one with: ${C_BOLD}termx theme set <name>${C_RESET}  or pick interactively: ${C_BOLD}termx theme${C_RESET}"
+}
+
+cmd_theme() {
+  [ -f "$ZSH_DIR/oh-my-zsh.sh" ] || die "Not installed yet. Run: termx install"
+  local sub="${1:-pick}"; shift 2>/dev/null || true
+  case "$sub" in
+    pick|"")        theme_pick ;;
+    list|ls)        local cur; cur="$(current_theme)"
+                    list_themes | while IFS= read -r t; do
+                      if [ "$t" = "$cur" ]; then printf '%s* %s%s\n' "$C_GREEN" "$t" "$C_RESET"; else printf '  %s\n' "$t"; fi
+                    done
+                    echo; echo "$(list_themes | wc -l | tr -d ' ') themes · preview all: termx theme gallery" ;;
+    gallery|show)   theme_gallery ;;
+    set|use|apply)  theme_set "${1:-}" ;;
+    try)            [ -n "${1:-}" ] || die "Usage: termx theme try <name>"
+                    theme_exists "$1" || die "Theme '$1' not found"
+                    info "Trying '$1': type ${C_BOLD}exit${C_RESET} to go back"; TERMX_THEME_OVERRIDE="$1" zsh -i ;;
+    random)         theme_set "$(list_themes | awk 'BEGIN{srand()} {a[NR]=$0} END{print a[int(rand()*NR)+1]}')" ;;
+    current)        current_theme ;;
+    render)         theme_render "${1:-$(current_theme)}" ;;
+    *)              theme_set "$sub" ;;    # `termx theme agnoster` shortcut
+  esac
+}
+
+# -------------------------------------------------------------------- env ----
+cmd_env() {
+  local f="$TERMX_HOME/env.zsh"; mkdir -p "$TERMX_HOME"; touch "$f"
+  case "${1:-list}" in
+    set)   [ $# -ge 3 ] || die "Usage: termx env set KEY VALUE"
+           case "$2" in *[!A-Za-z0-9_]*|[0-9]*) die "Invalid variable name: $2" ;; esac
+           grep -v "^export $2=" "$f" > "$f.tmp"; mv "$f.tmp" "$f"
+           local v; v="$(printf '%s' "$3" | sed "s/'/'\\\\''/g")"
+           echo "export $2='$v'" >> "$f"; touch "$TERMX_HOME/.reload"; ok "$2 saved (applies to all new shells)" ;;
+    unset) [ -n "${2:-}" ] || die "Usage: termx env unset KEY"
+           grep -v "^export $2=" "$f" > "$f.tmp"; mv "$f.tmp" "$f"; touch "$TERMX_HOME/.reload"; ok "$2 removed" ;;
+    path)  [ -n "${2:-}" ] || die "Usage: termx env path <dir>"
+           echo "path=(\"$2\" \$path)" >> "$f"; touch "$TERMX_HOME/.reload"; ok "$2 added to PATH" ;;
+    list)  if [ -s "$f" ]; then cat "$f"; else echo "No custom variables yet. Add: termx env set KEY VALUE"; fi ;;
+    edit)  "${EDITOR:-nano}" "$f" ;;
+    *)     die "Usage: termx env [list|set KEY VALUE|unset KEY|path DIR|edit]" ;;
+  esac
+}
+
+# ------------------------------------------------------------- commands ----
+cmd_install() {
+  local theme=""
+  while [ $# -gt 0 ]; do
+    case "$1" in -y|--yes) ASSUME_YES=1 ;; --theme) theme="${2:-}"; shift ;; --theme=*) theme="${1#*=}" ;; esac; shift
+  done
+  [ "$OS" = windows ] && die "On Windows use PowerShell:  .\\install   (Oh My Posh version)"
+  [ "$OS" = unknown ] && die "Unsupported OS: $(uname -s)"
+  banner
+  ensure_packages
+  install_omz
+  install_plugins
+  install_font
+  self_install
+  [ -n "$theme" ] && { mkdir -p "$TERMX_HOME"; echo "$theme" > "$TERMX_HOME/theme"; }
+  configure_zshrc
+  configure_terminal_font
+  set_default_shell
+  echo
+  printf '%s All done!%s\n\n' "$C_GREEN$C_BOLD" "$C_RESET"
+  cat <<EOF
+  ${C_BOLD}termx theme${C_RESET}            pick a theme (live preview)
+  ${C_BOLD}termx theme gallery${C_RESET}    see every theme in your terminal
+  ${C_BOLD}termx env set K V${C_RESET}      add an environment variable
+  ${C_BOLD}termx uninstall${C_RESET}        remove everything
+
+  Suggestions: type, then press ${C_BOLD}→${C_RESET} or ${C_BOLD}Ctrl+Space${C_RESET} to accept.
+EOF
+  echo
+  if [ -t 1 ] && [ -r /dev/tty ] && [ "${TERMX_NO_EXEC:-0}" != 1 ]; then
+    info "Starting your new shell…"; exec zsh -l < /dev/tty
+  else
+    echo "  Open a new terminal tab to start using it."
+  fi
+}
+
+cmd_update() {
+  info "Updating Oh My Zsh…"
+  ZSH="$ZSH_DIR" zsh -f "$ZSH_DIR/tools/upgrade.sh" >/dev/null 2>&1 && ok "Oh My Zsh updated" || warn "Oh My Zsh update failed"
+  install_plugins
+  [ "$OS" = mac ] && has brew && brew upgrade fzf >/dev/null 2>&1
+  touch "$TERMX_HOME/.reload"; ok "Up to date"
+}
+
+cmd_doctor() {
+  row() { if [ "$2" = 1 ]; then ok "$1"; else err "$1"; fi; }
+  local b
+  echo "termx $TERMX_VERSION on $OS_NAME"; echo
+  row "zsh           $(zsh --version 2>/dev/null | head -1)" "$(has zsh && echo 1 || echo 0)"
+  row "default shell ${SHELL:-?}" "$(case "${SHELL:-}" in */zsh) echo 1;; *) echo 0;; esac)"
+  row "Oh My Zsh     $ZSH_DIR" "$([ -f "$ZSH_DIR/oh-my-zsh.sh" ] && echo 1 || echo 0)"
+  for b in zsh-autosuggestions zsh-syntax-highlighting zsh-completions; do
+    row "plugin        $b" "$([ -d "$ZSH_CUSTOM_DIR/plugins/$b" ] && echo 1 || echo 0)"
+  done
+  row "fzf           (theme picker preview)" "$(has fzf && echo 1 || echo 0)"
+  row ".zshrc        termx blocks" "$(grep -qF "$PRE_START" "$ZSHRC" 2>/dev/null && echo 1 || echo 0)"
+  row "termx on PATH $TERMX_HOME/bin" "$([ -x "$TERMX_HOME/bin/termx" ] && echo 1 || echo 0)"
+  echo; echo "theme: $(current_theme)"
+}
+
+cmd_uninstall() {
+  local mode=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --all|--full) mode=all ;; --keep-omz|--termx-only) mode=termx ;; -y|--yes) ASSUME_YES=1 ;; esac; shift
+  done
+  if [ -z "$mode" ]; then
+    echo "What do you want to remove?"
+    echo "  1) termx only        (keep Oh My Zsh, remove termx config)"
+    echo "  2) everything        (termx + Oh My Zsh + plugins, restore original ~/.zshrc)"
+    echo "  3) cancel"
+    case "$(ask 'Choose [1-3]:' 3)" in 1) mode=termx ;; 2) mode=all ;; *) echo "Cancelled."; return 0 ;; esac
+  fi
+  [ "$ASSUME_YES" = 1 ] || confirm "Proceed with '$mode' uninstall?" || { echo "Cancelled."; return 0; }
+
+  local bk="$TERMX_HOME/backups"
+  if [ "$mode" = all ]; then
+    if [ -f "$bk/zshrc.original" ]; then cp "$bk/zshrc.original" "$ZSHRC"; ok "Original ~/.zshrc restored"
+    elif [ -f "$bk/zshrc.none" ]; then rm -f "$ZSHRC"; ok "Removed ~/.zshrc (you had none before)"
+    elif [ -f "$ZSHRC" ]; then strip_blocks < "$ZSHRC" > "$ZSHRC.tmp" && mv "$ZSHRC.tmp" "$ZSHRC"; fi
+    # keep a safety copy of the final state
+    cp "$ZSHRC" "$HOME/.zshrc.termx-uninstalled" 2>/dev/null || true
+    rm -rf "$ZSH_DIR"; ok "Oh My Zsh, plugins and themes removed"
+    # never leave a .zshrc that sources the Oh My Zsh we just deleted
+    if [ -f "$ZSHRC" ] && grep -q 'oh-my-zsh\.sh' "$ZSHRC"; then
+      awk '/^[[:space:]]*(source|\.)[[:space:]].*oh-my-zsh\.sh/ {print "# (Oh My Zsh removed by termx) " $0; next} {print}' \
+        "$ZSHRC" > "$ZSHRC.tmp" && mv "$ZSHRC.tmp" "$ZSHRC"
+    fi
+    [ -f "$TERMX_HOME/.created-p10k" ] && rm -f "$HOME/.p10k.zsh"
+  else
+    if [ -f "$ZSHRC" ]; then strip_blocks < "$ZSHRC" > "$ZSHRC.tmp" && mv "$ZSHRC.tmp" "$ZSHRC"; ok "termx blocks removed from ~/.zshrc"; fi
+  fi
+  rm -f "$HOME/Library/Application Support/iTerm2/DynamicProfiles/termx.json" 2>/dev/null
+  if [ "$(defaults read com.googlecode.iterm2 'Default Bookmark Guid' 2>/dev/null)" = "termx-0001-profile" ]; then
+    defaults delete com.googlecode.iterm2 "Default Bookmark Guid" >/dev/null 2>&1 || true
+  fi
+  # keep backups next to home just in case
+  [ -d "$bk" ] && { mkdir -p "$HOME/.termx-backups"; cp -R "$bk/." "$HOME/.termx-backups/" 2>/dev/null; }
+  rm -rf "$TERMX_HOME"
+  ok "termx removed (backups kept in ~/.termx-backups)"
+  echo "  Fonts, fzf and Homebrew were left installed. Open a new terminal to finish."
+}
+
+cmd_help() {
+  cat <<EOF
+${C_BOLD}termx${C_RESET} $TERMX_VERSION: same commands on macOS, Linux and Windows
+
+  termx install [--theme NAME] [--yes]   install + auto-configure everything
+  termx theme                            interactive picker with live preview
+  termx theme list | gallery             list names | render every theme
+  termx theme set|try NAME               apply | test in a temporary shell
+  termx theme random | current
+  termx env list|set K V|unset K|path DIR|edit
+  termx update | doctor
+  termx uninstall [--all|--termx-only] [--yes]
+EOF
+}
+
+main() {
+  local cmd="${1:-help}"; shift 2>/dev/null || true
+  case "$cmd" in
+    install|setup)      cmd_install "$@" ;;
+    theme|themes)       cmd_theme "$@" ;;
+    env)                cmd_env "$@" ;;
+    update|upgrade)     cmd_update ;;
+    doctor|status)      cmd_doctor ;;
+    uninstall|remove)   cmd_uninstall "$@" ;;
+    version|-v|--version) echo "termx $TERMX_VERSION" ;;
+    help|-h|--help)     cmd_help ;;
+    *)                  err "Unknown command: $cmd"; cmd_help; exit 1 ;;
+  esac
+}
+main "$@"

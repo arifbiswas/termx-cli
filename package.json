@@ -1,0 +1,22 @@
+{
+  "name": "termx-cli",
+  "version": "1.0.0",
+  "description": "One command terminal customizer: Oh My Zsh on macOS/Linux, Oh My Posh on Windows, with auto-suggestions, Nerd Fonts, a live theme picker, env manager and clean uninstall.",
+  "bin": {
+    "termx": "bin/termx.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": ["terminal", "oh-my-zsh", "oh-my-posh", "zsh", "powershell", "theme", "autosuggestions", "cli", "dotfiles", "nerd-font"],
+  "author": "arifbiswas",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/arifbiswas/termx-cli.git" },
+  "homepage": "https://github.com/arifbiswas/termx-cli#readme",
+  "bugs": { "url": "https://github.com/arifbiswas/termx-cli/issues" },
+  "engines": { "node": ">=14" },
+  "os": ["darwin", "linux", "win32"]
+}

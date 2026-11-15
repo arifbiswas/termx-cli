@@ -1,0 +1,7 @@
+* text=auto
+*.sh text eol=lf
+src/unix/termx text eol=lf
+install text eol=lf
+uninstall text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
