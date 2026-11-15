@@ -278,7 +278,7 @@ EOF
 }
 
 configure_zshrc() {
-  info "Configuring $ZSHRC…"
+  info "Configuring ${ZSHRC}…"
   mkdir -p "$TERMX_HOME/backups"
   local ts tmp; ts="$(date +%Y%m%d-%H%M%S)"; tmp="$(mktemp)"
   # reinstall after an uninstall: keep the *true* original from the first install
