@@ -47,6 +47,18 @@ test('termx help lists commands', () => {
   assert.strictEqual(r.code, 0, r.out);
   for (const c of ['install', 'theme', 'env', 'uninstall']) assert.ok(r.out.includes(c), `missing ${c}`);
 });
+test('npx install also installs globally (and only then)', () => {
+  const { shouldInstallGlobal } = require(path.join(root, 'bin', 'termx.js'));
+  const npxDir = path.join('home', '.npm', '_npx', 'abc123', 'node_modules', 'termx-cli', 'bin');
+  const globalDir = path.join('usr', 'local', 'lib', 'node_modules', 'termx-cli', 'bin');
+  assert.strictEqual(shouldInstallGlobal(npxDir, ['install'], {}), true);
+  assert.strictEqual(shouldInstallGlobal(npxDir, ['setup', '--yes'], {}), true);
+  assert.strictEqual(shouldInstallGlobal(npxDir, ['install', '--no-global'], {}), false);
+  assert.strictEqual(shouldInstallGlobal(npxDir, ['install'], { TERMX_NO_GLOBAL: '1' }), false);
+  assert.strictEqual(shouldInstallGlobal(npxDir, ['theme'], {}), false);
+  assert.strictEqual(shouldInstallGlobal(globalDir, ['install'], {}), false);
+  assert.strictEqual(shouldInstallGlobal('C:\\Users\\a\\AppData\\Local\\npm-cache\\_npx\\x\\node_modules\\termx-cli\\bin', ['install'], {}), true);
+});
 test('unknown command exits non-zero', () => {
   assert.notStrictEqual(termx('definitely-not-a-command').code, 0);
 });
