@@ -24,12 +24,9 @@
 npx termx-cli install
 ```
 
-or install the `termx` command globally:
+That one command also installs `termx-cli` **globally** (`npm install -g`) by default, so the `termx` command keeps working afterwards. Add `--no-global` to skip that. If the global install isn't allowed (for example, a permission error with a system Node), setup continues anyway, because termx also installs itself to `~/.termx/bin` and adds it to your PATH.
 
-```bash
-npm install -g termx-cli
-termx install
-```
+Already installed globally? Then just run `termx install`.
 
 Without Node, from a clone of this repo: `./install` (mac/Linux) or `.\install` (Windows).
 
