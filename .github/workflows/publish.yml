@@ -109,9 +109,8 @@ jobs:
             echo "## 📦 npm: [\`$NAME@$V\`](https://www.npmjs.com/package/$NAME/v/$V)"
             echo
             echo '```bash'
-            echo "npx $NAME@$V install"
-            echo "# or"
-            echo "npm install -g $NAME@$V"
+            echo "npm i -g $NAME@$V"
+            echo "termx install"
             echo '```'
             echo
             echo "### Changes"

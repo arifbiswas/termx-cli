@@ -3,8 +3,9 @@
 //   Windows       -> src/windows/termx.ps1  (Oh My Posh)
 //   macOS / Linux -> src/unix/termx         (Oh My Zsh)
 //
-// `npx termx-cli install` also installs termx-cli globally first, so the
-// `termx` command keeps working after npx's temporary copy is gone.
+// Recommended:  npm i -g termx-cli && termx install
+// `npx termx-cli install` also installs the latest termx-cli globally and
+// hands off to it, so even an old cached npx copy runs the newest code.
 // Skip that with --no-global (or TERMX_NO_GLOBAL=1).
 'use strict';
 const { spawnSync } = require('child_process');
@@ -21,6 +22,7 @@ function isNpx(dir) {
 
 function shouldInstallGlobal(dir, args, env) {
   if (args[0] !== 'install' && args[0] !== 'setup') return false;
+  if (env.TERMX_HANDOFF === '1') return false;
   if (args.includes('--no-global') || env.TERMX_NO_GLOBAL === '1') return false;
   return isNpx(dir);
 }
@@ -30,31 +32,32 @@ function npm(args, opts = {}) {
   return spawnSync('npm', args, { shell: isWin, encoding: 'utf8', ...opts });
 }
 
-// Version of termx-cli installed globally, or null. Uses `npm ls --json`
-// (not `npm root -g`: npm masks UUID-like path segments as "***").
-function globalVersion() {
-  const r = npm(['ls', '-g', pkg.name, '--depth=0', '--json']);
-  try {
-    const dep = JSON.parse(r.stdout || '{}').dependencies || {};
-    return (dep[pkg.name] && dep[pkg.name].version) || null;
-  } catch { return null; }
-}
-
+// npx (especially an old cached npx copy) -> install the LATEST termx-cli
+// globally, then hand off to it so the newest code does the setup.
 function installGlobal() {
-  const spec = `${pkg.name}@${pkg.version}`;
-  if (globalVersion() === pkg.version) {
-    console.log(` \x1b[32m✓\x1b[0m ${spec} already installed globally`);
-    return;
-  }
-  console.log(`\x1b[34m\x1b[1m==>\x1b[0m Installing ${spec} globally (npm install -g) so \`termx\` stays available…`);
+  const spec = `${pkg.name}@latest`;
+  console.log(`\x1b[34m\x1b[1m==>\x1b[0m Installing ${spec} globally (npm i -g) so the \`termx\` command is always available…`);
   const r = npm(['install', '-g', spec, '--no-fund', '--no-audit', '--loglevel=error'], { stdio: 'inherit' });
   if (r.status === 0) {
     console.log(` \x1b[32m✓\x1b[0m termx installed globally`);
-  } else {
-    // e.g. EACCES with a system Node on mac/Linux: setup still works,
-    // because termx also installs itself to ~/.termx/bin and adds it to PATH.
-    console.log(` \x1b[33m!\x1b[0m Global npm install failed, continuing (termx is also installed to ~/.termx/bin)`);
+    return true;
   }
+  // e.g. EACCES with a system Node on mac/Linux: setup still works,
+  // because termx also installs itself to ~/.termx/bin and adds it to PATH.
+  console.log(` \x1b[33m!\x1b[0m Global npm install failed, continuing with this copy (termx also installs itself to ~/.termx/bin)`);
+  return false;
+}
+
+// Run the globally installed `termx`, skipping npx's own .bin folders on PATH
+// (otherwise `termx` would resolve back to this npx copy). null = not found.
+function runGlobal(args) {
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
+  const clean = (process.env[key] || '').split(path.delimiter)
+    .filter((p) => !p.split(/[\\/]/).includes('_npx')).join(path.delimiter);
+  const env = { ...process.env, [key]: clean, TERMX_HANDOFF: '1' };
+  const r = spawnSync('termx', args, { stdio: 'inherit', env, shell: isWin });
+  if (r.error || r.status === 127 || (isWin && r.status === 9009)) return null;
+  return r.status === null ? 1 : r.status;
 }
 
 function run(cmd, cmdArgs) {
@@ -65,8 +68,11 @@ function run(cmd, cmdArgs) {
 
 function main() {
   const argv = process.argv.slice(2);
-  if (shouldInstallGlobal(__dirname, argv, process.env)) installGlobal();
   const args = argv.filter((a) => a !== '--no-global');
+  if (shouldInstallGlobal(__dirname, argv, process.env) && installGlobal()) {
+    const code = runGlobal(args);
+    if (code !== null) process.exit(code);
+  }
 
   let code;
   if (isWin) {
@@ -83,4 +89,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { isNpx, shouldInstallGlobal, installGlobal };
+module.exports = { isNpx, shouldInstallGlobal, installGlobal, runGlobal };
