@@ -23,7 +23,7 @@ $Argv = [string[]]@($args)
 
 $ErrorActionPreference = 'Continue'   # 'Stop' breaks native-command stderr on PowerShell 5.1
 $ProgressPreference    = 'SilentlyContinue'
-$TermxVersion  = '1.0.4'
+$TermxVersion  = '1.0.5'
 $TermxHome     = if ($env:TERMX_HOME) { $env:TERMX_HOME } else { Join-Path $HOME '.termx' }
 $TermxBin      = Join-Path $TermxHome 'bin'
 $ThemesDir     = Join-Path $TermxHome 'themes'
