@@ -91,13 +91,68 @@ function Invoke-Winget([string[]]$wingetArgs) {
 }
 
 # ----------------------------------------------------------- install steps ---
-function Set-ExecPolicy {
-    $p = Get-ExecutionPolicy -Scope CurrentUser
-    if ($p -in @('Undefined', 'Restricted', 'AllSigned')) {
-        try {
-            Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction Stop
-            Ok 'Execution policy (CurrentUser) -> RemoteSigned, so your profile can load'
-        } catch { Warn "Could not set execution policy: $($_.Exception.Message)" }
+# ------------------------------------------------------ execution policy ----
+# Must pass BEFORE anything is installed: if PowerShell can't run scripts,
+# the profile (prompt, suggestions, theme) never loads and setup is useless.
+$script:GoodPolicies = @('RemoteSigned', 'Unrestricted', 'Bypass')
+
+# Policy that new PowerShell windows will get. The Process scope is ignored on
+# purpose: our launcher runs with -ExecutionPolicy Bypass, which would hide the problem.
+function Get-PersistentPolicy {
+    $list = Get-ExecutionPolicy -List
+    foreach ($scope in 'MachinePolicy', 'UserPolicy', 'CurrentUser', 'LocalMachine') {
+        $p = "$(($list | Where-Object { "$($_.Scope)" -eq $scope }).ExecutionPolicy)"
+        if ($p -and $p -ne 'Undefined') { return [pscustomobject]@{ Scope = $scope; Policy = $p } }
+    }
+    # nothing set anywhere: Windows client default is Restricted
+    return [pscustomobject]@{ Scope = 'Default'; Policy = 'Restricted' }
+}
+
+# Set CurrentUser policy for the *other* PowerShell edition too
+# (5.1 stores it in the registry, 7+ in Documents\PowerShell\powershell.config.json).
+function Set-OtherEditionPolicy {
+    $other = if ($PSVersionTable.PSEdition -eq 'Core') { 'powershell.exe' } else { 'pwsh' }
+    if (-not (Has $other)) { return }
+    & $other -NoProfile -NonInteractive -Command "try { if ((Get-ExecutionPolicy -Scope CurrentUser) -notin 'RemoteSigned','Unrestricted','Bypass') { Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force -ErrorAction Stop } } catch {}" *> $null
+}
+
+function Assert-ExecutionPolicy {
+    Info 'Checking PowerShell execution policy (must be fixed before setup)...'
+    $before = Get-PersistentPolicy
+    if ($before.Policy -in $script:GoodPolicies) {
+        Ok "Execution policy OK: $($before.Policy) ($($before.Scope))"
+        Set-OtherEditionPolicy
+        return
+    }
+    if ($before.Scope -in 'MachinePolicy', 'UserPolicy') {
+        Err "Execution policy is locked to '$($before.Policy)' by Group Policy ($($before.Scope))."
+        Write-Host '     PowerShell will refuse to load your profile, so setup was stopped before installing anything.'
+        Write-Host '     Ask your IT admin to allow RemoteSigned, then run termx install again.' -ForegroundColor Yellow
+        exit 1
+    }
+
+    Warn "Execution policy is '$($before.Policy)' ($($before.Scope)): PowerShell can't run your profile. Fixing it for your user..."
+    $setError = $null
+    try { Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction Stop }
+    catch { $setError = $_.Exception.Message }   # also thrown when a stricter scope overrides it
+    Set-OtherEditionPolicy
+
+    $after = Get-PersistentPolicy
+    if ($after.Policy -notin $script:GoodPolicies) {
+        Err "Could not fix the execution policy (still '$($after.Policy)' from $($after.Scope))."
+        if ($setError) { Write-Host "     $setError" -ForegroundColor DarkGray }
+        Write-Host '     Setup stopped before installing anything. Run this in PowerShell, then run termx install again:'
+        Write-Host '       Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force' -ForegroundColor Cyan
+        exit 1
+    }
+    Ok "Execution policy fixed: $($before.Policy) -> $($after.Policy) (CurrentUser)"
+}
+
+# Files downloaded with a browser carry "Mark of the Web" and are blocked under
+# RemoteSigned even after the policy is fixed, so clear it on everything termx runs.
+function Unblock-TermxFiles([string[]]$paths) {
+    foreach ($p in $paths) {
+        if ($p -and (Test-Path $p)) { Get-Item $p -Force | Unblock-File -ErrorAction SilentlyContinue }
     }
 }
 
@@ -457,8 +512,8 @@ function Invoke-Install([string[]]$a) {
         }
     }
     Show-Banner
+    Assert-ExecutionPolicy          # step 0: stops here if scripts can't run
     New-Item -ItemType Directory -Force $TermxHome, $BackupDir | Out-Null
-    Set-ExecPolicy
     Install-OhMyPosh
     Install-Fzf
     Install-NerdFont
@@ -469,6 +524,7 @@ function Invoke-Install([string[]]$a) {
     Add-ProfileHooks
     Install-Self
     Set-TerminalFont $FontFace
+    Unblock-TermxFiles (@($TermxProfile, $EnvFile, (Join-Path $TermxBin 'termx.ps1')) + (Get-ProfilePaths))
 
     Write-Host "`n All done!`n" -ForegroundColor Green
     Write-Host '  termx theme            pick a theme (live preview)'
@@ -495,6 +551,8 @@ function Invoke-Doctor {
     Refresh-Path
     function Row($label, $good) { if ($good) { Ok $label } else { Err $label } }
     Write-Host "termx $TermxVersion on Windows, PowerShell $($PSVersionTable.PSVersion)`n"
+    $pol = Get-PersistentPolicy
+    Row "execution policy $($pol.Policy) ($($pol.Scope))" ($pol.Policy -in $script:GoodPolicies)
     Row "oh-my-posh     $(if (Has oh-my-posh) { oh-my-posh version })" (Has oh-my-posh)
     $psrl = Get-Module -ListAvailable PSReadLine | Sort-Object Version -Descending | Select-Object -First 1
     Row "PSReadLine     $($psrl.Version) (needs 2.2+ for suggestions)" ($psrl -and $psrl.Version -ge [version]'2.2.0')

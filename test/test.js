@@ -59,6 +59,16 @@ if (isWin) {
     const r = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd]);
     assert.strictEqual(r.code, 0, r.out);
   });
+  test('doctor reports the execution policy', () => {
+    const r = termx('doctor');
+    assert.match(r.out, /execution policy (Restricted|RemoteSigned|Unrestricted|Bypass|AllSigned)/, r.out);
+  });
+  test('install checks execution policy before installing anything', () => {
+    const src = fs.readFileSync(path.join(root, 'src', 'windows', 'termx.ps1'), 'utf8');
+    const body = src.slice(src.indexOf('function Invoke-Install'));
+    const a = body.indexOf('Assert-ExecutionPolicy'), b = body.indexOf('Install-OhMyPosh');
+    assert.ok(a > 0 && a < b, 'Assert-ExecutionPolicy must run before Install-OhMyPosh');
+  });
   test('theme command without install asks to install', () => {
     const r = termx('theme', 'list');
     assert.notStrictEqual(r.code, 0);

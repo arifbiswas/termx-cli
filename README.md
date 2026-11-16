@@ -49,7 +49,8 @@ Options: `--theme NAME` (start with a theme), `--yes` (no questions).
 - Oh My Zsh / Oh My Posh + plugins + themes + Nerd Font
 - Terminal font (Terminal.app, iTerm2, Windows Terminal)
 - Shell profile (`~/.zshrc` / PowerShell 5.1 **and** 7 profiles). Your existing PATH, aliases and env are kept and backed up first
-- Default shell → zsh, PowerShell execution policy → RemoteSigned (CurrentUser)
+- Default shell → zsh on mac
+- **Windows execution policy is checked first.** If PowerShell can't run scripts, termx sets `RemoteSigned` for your user (both PowerShell 5.1 and 7) *before* installing anything. If that fails, for example because Group Policy locks it, setup stops with the exact fix, so nothing is half-installed. Downloaded script files are unblocked too.
 - `termx` added to PATH. Powerlevel10k comes preconfigured, so no setup wizard pops up
 
 Re-running install is safe (idempotent).
