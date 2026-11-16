@@ -56,6 +56,7 @@ test('npx install also installs globally (and only then)', () => {
   assert.strictEqual(shouldInstallGlobal(npxDir, ['install', '--no-global'], {}), false);
   assert.strictEqual(shouldInstallGlobal(npxDir, ['install'], { TERMX_NO_GLOBAL: '1' }), false);
   assert.strictEqual(shouldInstallGlobal(npxDir, ['theme'], {}), false);
+  assert.strictEqual(shouldInstallGlobal(npxDir, ['install'], { TERMX_HANDOFF: '1' }), false, 'no loop after hand-off');
   assert.strictEqual(shouldInstallGlobal(globalDir, ['install'], {}), false);
   assert.strictEqual(shouldInstallGlobal('C:\\Users\\a\\AppData\\Local\\npm-cache\\_npx\\x\\node_modules\\termx-cli\\bin', ['install'], {}), true);
 });

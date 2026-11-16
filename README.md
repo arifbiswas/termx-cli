@@ -18,15 +18,23 @@
 
 ## Install
 
-**With npm: the exact same command on macOS, Linux and Windows:**
+**With npm: the same two commands on macOS, Linux and Windows:**
 
 ```bash
-npx termx-cli install
+npm i -g termx-cli
+termx install
 ```
 
-That one command also installs `termx-cli` **globally** (`npm install -g`) by default, so the `termx` command keeps working afterwards. Add `--no-global` to skip that. If the global install isn't allowed (for example, a permission error with a system Node), setup continues anyway, because termx also installs itself to `~/.termx/bin` and adds it to your PATH.
+`npm i -g` installs the `termx` command **globally**, so it's always available. `termx install` then sets up everything.
+As one line: `npm i -g termx-cli && termx install` (bash, zsh, cmd, PowerShell 7). In Windows PowerShell 5.1 use `;` instead of `&&`.
 
-Already installed globally? Then just run `termx install`.
+Update later with `npm i -g termx-cli@latest`.
+
+<details><summary>Using npx instead</summary>
+
+`npx termx-cli@latest install` also works: it installs the latest `termx-cli` globally first, then runs setup with it.
+Always add `@latest`, because without it npx can reuse an old cached copy.
+</details>
 
 Without Node, from a clone of this repo: `./install` (mac/Linux) or `.\install` (Windows).
 
