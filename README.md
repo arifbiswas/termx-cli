@@ -1,5 +1,12 @@
 # termx: one-command terminal customizer
 
+[![npm version](https://img.shields.io/npm/v/termx-cli?logo=npm&color=cb3837)](https://www.npmjs.com/package/termx-cli)
+[![npm downloads](https://img.shields.io/npm/dm/termx-cli?logo=npm)](https://www.npmjs.com/package/termx-cli)
+[![CI](https://github.com/arifbiswas/termx-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/arifbiswas/termx-cli/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/termx-cli)](LICENSE)
+
+📦 **npm:** [npmjs.com/package/termx-cli](https://www.npmjs.com/package/termx-cli)
+
 **Same command on every device.** termx detects the OS and installs the right setup:
 
 | | macOS / Linux | Windows |

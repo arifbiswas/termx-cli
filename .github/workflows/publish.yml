@@ -97,3 +97,28 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release (links to npm)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${{ steps.version.outputs.next }}"
+          NAME=$(node -p "require('./package.json').name")
+          PREV=$(git tag -l 'v[0-9]*' | sort -V | grep -v "^v$V$" | tail -1)
+          {
+            echo "## 📦 npm: [\`$NAME@$V\`](https://www.npmjs.com/package/$NAME/v/$V)"
+            echo
+            echo '```bash'
+            echo "npx $NAME@$V install"
+            echo "# or"
+            echo "npm install -g $NAME@$V"
+            echo '```'
+            echo
+            echo "### Changes"
+            if [ -n "$PREV" ]; then
+              git log --no-merges --pretty='- %s (%h)' "$PREV..v$V" | grep -v 'chore(release)' || true
+            else
+              git log --no-merges --pretty='- %s (%h)' "v$V" | grep -v 'chore(release)' || true
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "v$V" --title "v$V" --notes-file "$RUNNER_TEMP/notes.md" --latest
